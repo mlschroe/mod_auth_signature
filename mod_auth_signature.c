@@ -36,6 +36,7 @@ typedef struct {
     const char *verification_program;
     const char *ssh_allowed_signers_file;
     const char *ssh_allowed_signers_env;
+    const char *armor_type;
     int no_signature_check_in_authentication;
     int allowed_clock_skew;
 } auth_signature_config_rec;
@@ -59,6 +60,9 @@ static const command_rec auth_signature_cmds[] =
     AP_INIT_FLAG("AuthSignatureNoSignatureCheckInAuthentication", ap_set_flag_slot,
 	(void *)APR_OFFSETOF(auth_signature_config_rec, no_signature_check_in_authentication),
 	OR_AUTHCFG, "Turn off signature checking in authentication hook"),
+    AP_INIT_TAKE1("AuthSignatureArmorType", ap_set_string_slot,
+	(void *)APR_OFFSETOF(auth_signature_config_rec, armor_type),
+	OR_AUTHCFG, "Turn off signature checking in authentication hook"),
     {NULL}
 };
 
@@ -67,16 +71,22 @@ static void *create_auth_signature_dir_config(apr_pool_t *p, char *d)
     auth_signature_config_rec *conf = apr_palloc(p, sizeof(*conf));
     conf->verification_program = NULL;
     conf->ssh_allowed_signers_file = NULL;
+    conf->ssh_allowed_signers_env= NULL;
+    conf->armor_type = NULL;
+    conf->no_signature_check_in_authentication = 0;
     conf->allowed_clock_skew = 300;
     return conf;
 }
 
-static void note_signature_auth_failure(request_rec *r)
+static int note_signature_auth_failure(request_rec *r)
 {
+    const char *realm = ap_auth_name(r);
+    if (!realm)
+	return HTTP_INTERNAL_SERVER_ERROR;
     apr_table_setn(r->err_headers_out,
-	(PROXYREQ_PROXY == r->proxyreq) ? "Proxy-Authenticate"
-                                        : "WWW-Authenticate",
-        apr_pstrcat(r->pool, "Signature realm=\"", ap_auth_name(r), "\",headers=\"(created)\"", NULL));
+	(PROXYREQ_PROXY == r->proxyreq) ? "Proxy-Authenticate" : "WWW-Authenticate",
+        apr_pstrcat(r->pool, "Signature realm=\"", realm, "\",headers=\"(created)\"", NULL));
+    return HTTP_UNAUTHORIZED;
 }
 
 static void get_kv(char **linep, char **kp, char **vp)
@@ -124,7 +134,7 @@ static void get_kv(char **linep, char **kp, char **vp)
     *linep = line;
 }
 
-static int get_signature_auth(request_rec *r, const char **keyid, const char **headers, const char **signature, const char **created, const char **expires)
+static int get_signature_auth(request_rec *r, const char **keyid, const char **algorithm, const char **headers, const char **signature, const char **created, const char **expires)
 {
     const char *auth_line;
     char *params, *k, *v;
@@ -140,6 +150,8 @@ static int get_signature_auth(request_rec *r, const char **keyid, const char **h
 	get_kv(&params, &k, &v);
 	if (!strcasecmp(k, "keyid") && v)
 	    *keyid = v;
+	if (!strcasecmp(k, "algorithm") && v)
+	    *algorithm = v;
 	if (!strcasecmp(k, "signature") && v)
 	    *signature = v;
 	if (!strcasecmp(k, "headers") && v)
@@ -230,9 +242,9 @@ static const char *make_allowed_signers_from_env(request_rec *r, const char *key
     return write_into_tmpfile(r, tempdir, "authallowed-XXXXXX", allowed, strlen(allowed));
 }
 
-static int verify_signature(request_rec *r, auth_signature_config_rec *conf, const char *keyid, const char *signdata, const char *signature, int signature_length)
+static int verify_signature(request_rec *r, auth_signature_config_rec *conf, const char *keyid, const char *algorithm, const char *signdata, const char *signature, int signature_length)
 {
-    const char *argv[7];
+    const char *argv[8];
     const char *tempdir;
     const char *signaturefile;
     const char *signdatafile;
@@ -263,10 +275,11 @@ static int verify_signature(request_rec *r, auth_signature_config_rec *conf, con
     argv[0] = conf->verification_program;
     argv[1] = ap_auth_name(r);
     argv[2] = keyid;
-    argv[3] = signaturefile;
-    argv[4] = signdatafile;
-    argv[5] = allowedsigners;	/* optional */
-    argv[6] = NULL;
+    argv[3] = algorithm ? algorithm : "";
+    argv[4] = signaturefile;
+    argv[5] = signdatafile;
+    argv[6] = allowedsigners;	/* optional */
+    argv[7] = NULL;
     res = run_external_verify(r, argv[0], argv);
     return res;
 }
@@ -285,15 +298,36 @@ static const char *create_sign_data(request_rec *r, const char *headers, const c
     return apr_psprintf(r->pool, "(created): %s", created);
 }
 
+static char *create_ssh_armor(request_rec *r, const char *signature, int signature_len)
+{
+    int len;
+    char *str, *p;
+    if (signature_len < 6 || strncmp(signature, "SSHSIG", 6) != 0) {
+	ap_log_rerror(APLOG_MARK, APLOG_ERR|APLOG_NOERRNO, 0, r, ERRTAG "not a ssh signature");
+	return NULL;
+    }
+    len = apr_base64_encode_len(signature_len);
+    str = apr_palloc(r->pool, len + len / 70);
+    len = apr_base64_encode_binary(str, (const unsigned char *)signature, signature_len) - 1;
+    for (p = str; len > 70; ) {
+	p += 70;
+	len -= 70;
+	memmove(p + 1, p, len + 1);
+	*p++ = '\n';
+    }
+    return apr_psprintf(r->pool, "-----BEGIN SSH SIGNATURE-----\n%s\n-----END SSH SIGNATURE-----\n", str);
+}
+
 static int authenticate_signature_user(request_rec *r, int isauthorization)
 {
     auth_signature_config_rec *conf = ap_get_module_config(r->per_dir_config, &auth_signature_module);
     const char *current_auth;
-    const char *created = NULL;
-    const char *expires = NULL;
     const char *keyid = NULL;
+    const char *algorithm = NULL;
     const char *headers = NULL;
     const char *signature = NULL;
+    const char *created = NULL;
+    const char *expires = NULL;
     const char *signdata;
     char *signature_decoded;
     int signature_decoded_len;
@@ -307,7 +341,7 @@ static int authenticate_signature_user(request_rec *r, int isauthorization)
 	return HTTP_INTERNAL_SERVER_ERROR;
     }
     r->ap_auth_type = (char*)current_auth;
-    res = get_signature_auth(r, &keyid, &headers, &signature, &created, &expires);
+    res = get_signature_auth(r, &keyid, &algorithm, &headers, &signature, &created, &expires);
     if (res)
 	return res;
     if (!keyid) {
@@ -327,6 +361,18 @@ static int authenticate_signature_user(request_rec *r, int isauthorization)
     signature_decoded_len = apr_base64_decode_len(signature);
     signature_decoded = apr_palloc(r->pool, signature_decoded_len);
     signature_decoded_len = apr_base64_decode_binary((unsigned char *)signature_decoded, signature);
+
+    if (conf->armor_type) {
+	if (!strcmp(conf->armor_type, "ssh")) {
+	    signature_decoded = create_ssh_armor(r, signature_decoded, signature_decoded_len);
+	    if (!signature_decoded)
+		return HTTP_UNAUTHORIZED;
+	    signature_decoded_len = strlen(signature_decoded);
+	} else {
+	    ap_log_rerror(APLOG_MARK, APLOG_ERR|APLOG_NOERRNO, 0, r, ERRTAG "unsupported armor type %s", conf->armor_type);
+	    return HTTP_INTERNAL_SERVER_ERROR;
+	}
+    }
 
     if (created) {
         char *end = (char *)created;
@@ -366,7 +412,7 @@ static int authenticate_signature_user(request_rec *r, int isauthorization)
 	ap_log_rerror(APLOG_MARK, APLOG_DEBUG|APLOG_NOERRNO, 0, r, ERRTAG "skipping signature verification");
 	return OK;
     }
-    return verify_signature(r, conf, keyid, signdata, signature_decoded, signature_decoded_len);
+    return verify_signature(r, conf, keyid, algorithm, signdata, signature_decoded, signature_decoded_len);
 }
 
 static authz_status auth_signature_check_authorization(request_rec *r,
@@ -393,7 +439,7 @@ static int hook_authenticate_signature_user(request_rec *r)
 {
     int res = authenticate_signature_user(r, 0);
     if (res == HTTP_UNAUTHORIZED)
-	note_signature_auth_failure(r);
+	res = note_signature_auth_failure(r);
     return res;
 }
 
