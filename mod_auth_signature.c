@@ -62,7 +62,7 @@ static const command_rec auth_signature_cmds[] =
 	OR_AUTHCFG, "Turn off signature checking in authentication hook"),
     AP_INIT_TAKE1("AuthSignatureArmorType", ap_set_string_slot,
 	(void *)APR_OFFSETOF(auth_signature_config_rec, armor_type),
-	OR_AUTHCFG, "Turn off signature checking in authentication hook"),
+	OR_AUTHCFG, "Specify the armor type to use to create signature armor"),
     {NULL}
 };
 
