@@ -9,6 +9,6 @@ all: mod_auth_signature.la
 
 dist:
 	mkdir mod_auth_signature
-	cp -a Makefile mod_auth_signature.c mod_auth_signature
+	cp -a LICENSE Makefile mod_auth_signature.c mod_auth_signature examples
 	tar czvf mod_auth_signature.tar.gz mod_auth_signature
 	rm -rf mod_auth_signature

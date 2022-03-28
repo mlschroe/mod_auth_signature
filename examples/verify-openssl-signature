@@ -1,0 +1,22 @@
+#!/bin/sh
+
+die() {
+    echo "$1" >&2
+    exit 1
+}
+
+test -n "$6" || die "Need an allowed signer directory"
+
+case "$2" in
+    "" | .* | */*) die "Illegal key '$2'" ;;
+esac
+
+test -f "$6/$2" || die "Unknown key '$2'"
+
+case "$3" in
+    rsa | rsa-sha256 | rsa-v1_5-sha256)
+	openssl dgst -sha256 -verify "$6/$2" -signature "$4" <"$5" >&2
+	;;
+    *) die "Unsupported signature algorithm '$3'" ;;
+esac
+

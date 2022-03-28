@@ -1,0 +1,15 @@
+#!/bin/bash
+
+die() {
+    echo "$1" >&2
+    exit 1
+}
+
+test -n "$6" || die "Need an allowed signer file"
+
+case "$3" in
+    "" | ssh | ssh-*)
+	ssh-keygen -Y verify -n "$1" -I "$2" -s "$4" -f "$6"  <"$5" >&2
+	;;
+    *) die "Unsupported algorithm $3" ;;
+esac
