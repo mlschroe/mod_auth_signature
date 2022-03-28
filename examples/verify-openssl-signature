@@ -13,10 +13,24 @@ esac
 
 test -f "$6/$2" || die "Unknown key '$2'"
 
-case "$3" in
-    rsa | rsa-sha256 | rsa-v1_5-sha256)
+keytype=
+case $(openssl pkey -in pub -pubin -text -noout | head -n 1) in
+    "RSA Public-Key"*) keytype=rsa ;;
+    "ED25519 Public-Key"*) keytype=ed25519 ;;
+esac
+
+test -n "$keytype" || die "Unsupported pubkey type"
+
+case "$keytype:$3" in
+    rsa: | rsa:rsa | rsa:rsa-sha256 | rsa:rsa-v1_5-sha256)
 	openssl dgst -sha256 -verify "$6/$2" -signature "$4" <"$5" >&2
 	;;
-    *) die "Unsupported signature algorithm '$3'" ;;
+    rsa:rsa-sha512 | rsa:rsa-v1_5-sha512)
+	openssl dgst -sha512 -verify "$6/$2" -signature "$4" <"$5" >&2
+	;;
+    ed25519: | ed25519:ed25519)
+	openssl pkeyutl -verify -inkey "$6/$2" -pubin -sigfile "$4" -rawin -in "$5" >&2
+	;;
+    *) die "Unsupported signature algorithm '$3' for pubkey type '$keytype'" ;;
 esac
 
