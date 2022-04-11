@@ -39,6 +39,7 @@ typedef struct {
     const char *armor_type;
     int no_signature_check_in_authentication;
     int allowed_clock_skew;
+    int add_basic_auth;
 } auth_signature_config_rec;
 
 module AP_MODULE_DECLARE_DATA auth_signature_module;
@@ -63,6 +64,9 @@ static const command_rec auth_signature_cmds[] =
     AP_INIT_TAKE1("AuthSignatureArmorType", ap_set_string_slot,
 	(void *)APR_OFFSETOF(auth_signature_config_rec, armor_type),
 	OR_AUTHCFG, "Specify the armor type to use to create signature armor"),
+    AP_INIT_FLAG("AuthSignatureAddBasicAuth", ap_set_flag_slot,
+	(void *)APR_OFFSETOF(auth_signature_config_rec, add_basic_auth),
+	OR_AUTHCFG, "Also add a Basic auth header element"),
     {NULL}
 };
 
@@ -75,17 +79,25 @@ static void *create_auth_signature_dir_config(apr_pool_t *p, char *d)
     conf->armor_type = NULL;
     conf->no_signature_check_in_authentication = 0;
     conf->allowed_clock_skew = 300;
+    conf->add_basic_auth = 0;
     return conf;
 }
 
 static int note_signature_auth_failure(request_rec *r)
 {
     const char *realm = ap_auth_name(r);
+    const char *sigauth;
+    const char *key = (PROXYREQ_PROXY == r->proxyreq) ? "Proxy-Authenticate" : "WWW-Authenticate";
+    auth_signature_config_rec *conf = ap_get_module_config(r->per_dir_config, &auth_signature_module);
     if (!realm)
 	return HTTP_INTERNAL_SERVER_ERROR;
-    apr_table_setn(r->err_headers_out,
-	(PROXYREQ_PROXY == r->proxyreq) ? "Proxy-Authenticate" : "WWW-Authenticate",
-        apr_pstrcat(r->pool, "Signature realm=\"", realm, "\",headers=\"(created)\"", NULL));
+    sigauth = apr_pstrcat(r->pool, "Signature realm=\"", realm, "\",headers=\"(created)\"", NULL);
+    if (conf->add_basic_auth) {
+	apr_table_setn(r->err_headers_out, key, apr_pstrcat(r->pool, "Basic realm=\"", realm, "\"", NULL));
+	apr_table_addn(r->err_headers_out, key, sigauth);
+    } else {
+	apr_table_setn(r->err_headers_out, key, sigauth);
+    }
     return HTTP_UNAUTHORIZED;
 }
 
