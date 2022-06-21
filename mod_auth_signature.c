@@ -95,6 +95,7 @@ static int note_signature_auth_failure(request_rec *r)
     if (conf->add_basic_auth) {
 	apr_table_setn(r->err_headers_out, key, apr_pstrcat(r->pool, "Basic realm=\"", realm, "\"", NULL));
 	apr_table_addn(r->err_headers_out, key, sigauth);
+	apr_table_addn(r->err_headers_out, key, apr_pstrcat(r->pool, "Basic realm=\"", realm, "\"", NULL));
     } else {
 	apr_table_setn(r->err_headers_out, key, sigauth);
     }
