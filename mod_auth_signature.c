@@ -86,20 +86,16 @@ static void *create_auth_signature_dir_config(apr_pool_t *p, char *d)
 static int note_signature_auth_failure(request_rec *r)
 {
     const char *realm = ap_auth_name(r);
+    const char *sigauth;
     const char *key = (PROXYREQ_PROXY == r->proxyreq) ? "Proxy-Authenticate" : "WWW-Authenticate";
     auth_signature_config_rec *conf = ap_get_module_config(r->per_dir_config, &auth_signature_module);
     if (!realm)
 	return HTTP_INTERNAL_SERVER_ERROR;
+    sigauth = apr_pstrcat(r->pool, "Signature realm=\"", realm, "\",headers=\"(created)\"", NULL);
     if (conf->add_basic_auth) {
-        const char *basicauth;
-        basicauth = apr_pstrcat(r->pool, "Basic realm=\"", realm, "\"", NULL);
-        // adding basic auth twice due to broken client implementations which either use only first or last
-	apr_table_setn(r->err_headers_out, key, basicauth);
-	apr_table_addn(r->err_headers_out, key, apr_pstrcat(r->pool, "Signature realm=\"", realm, "\",headers=\"(created)\"", NULL));
-	apr_table_addn(r->err_headers_out, key, basicauth);
+	apr_table_setn(r->err_headers_out, key, apr_pstrcat(r->pool, "Basic realm=\"", realm, "\"", NULL));
+	apr_table_addn(r->err_headers_out, key, sigauth);
     } else {
-        const char *sigauth;
-        sigauth = apr_pstrcat(r->pool, "Signature realm=\"", realm, "\",headers=\"(created)\"", NULL);
 	apr_table_setn(r->err_headers_out, key, sigauth);
     }
     return HTTP_UNAUTHORIZED;
