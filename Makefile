@@ -10,6 +10,6 @@ all: mod_auth_signature.la
 dist:
 	rm -rf mod_auth_signature
 	mkdir mod_auth_signature
-	cp -a LICENSE Makefile mod_auth_signature.c examples mod_auth_signature
+	cp -a README.md LICENSE Makefile mod_auth_signature.c examples mod_auth_signature
 	tar czvf mod_auth_signature.tar.gz mod_auth_signature
 	rm -rf mod_auth_signature
