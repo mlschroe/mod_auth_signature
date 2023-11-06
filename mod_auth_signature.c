@@ -276,14 +276,19 @@ static int verify_signature(request_rec *r, auth_signature_config_rec *conf, con
     if (!signaturefile)
 	return HTTP_INTERNAL_SERVER_ERROR;
     signdatafile = write_into_tmpfile(r, tempdir, "authdata-XXXXXX", signdata, strlen(signdata));
-    if (!signdatafile)
+    if (!signdatafile) {
+	apr_file_remove(signaturefile, r->pool);
 	return HTTP_INTERNAL_SERVER_ERROR;
+    }
     if (conf->ssh_allowed_signers_file)
 	allowedsigners = conf->ssh_allowed_signers_file;
     else if (conf->ssh_allowed_signers_env) {
 	allowedsigners = make_allowed_signers_from_env(r, keyid, conf->ssh_allowed_signers_env, tempdir);
-	if (!allowedsigners)
+	if (!allowedsigners) {
+	    apr_file_remove(signaturefile, r->pool);
+	    apr_file_remove(signdatafile, r->pool);
 	    return HTTP_UNAUTHORIZED;
+	}
     }
     argv[0] = conf->verification_program;
     argv[1] = ap_auth_name(r);
@@ -294,6 +299,10 @@ static int verify_signature(request_rec *r, auth_signature_config_rec *conf, con
     argv[6] = allowedsigners;	/* optional */
     argv[7] = NULL;
     res = run_external_verify(r, argv[0], argv);
+    apr_file_remove(signaturefile, r->pool);
+    apr_file_remove(signdatafile, r->pool);
+    if (allowedsigners && allowedsigners != conf->ssh_allowed_signers_file)
+	apr_file_remove(allowedsigners, r->pool);
     return res;
 }
 
